@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 from PIL import Image, ImageFilter
+import requests
 
 # --- 1. BIORHYTHM ENGINE ---
 def calculate_biorhythms(birthdate: datetime, target_date: datetime) -> Dict[str, float]:
@@ -33,6 +34,71 @@ def calculate_name_number(name: str) -> Tuple[int, str]:
     while total > 9:
         total = sum(int(digit) for digit in str(total))
     return total, PLANETARY_RULERS.get(total, "Unknown")
+
+# --- Pythagorean "Expression Number" (preserves master numbers 11/22/33) ---
+EXPRESSION_MEANINGS = {
+    1: "Liderança, independência, iniciativa e originalidade.",
+    2: "Cooperação, diplomacia, sensibilidade e parcerias.",
+    3: "Expressão criativa, comunicação, otimismo e sociabilidade.",
+    4: "Disciplina, praticidade, organização e trabalho constante.",
+    5: "Liberdade, versatilidade, aventura e adaptabilidade.",
+    6: "Responsabilidade, cuidado com o outro, harmonia e família.",
+    7: "Introspecção, análise, espiritualidade e busca por verdade.",
+    8: "Ambição, poder pessoal, gestão material e realização.",
+    9: "Compaixão, idealismo, generosidade e visão humanitária.",
+    11: "Intuição elevada, inspiração idealista e visão espiritual.",
+    22: "Realização em grande escala; o 'mestre construtor', visão prática e ambiciosa.",
+    33: "Amor incondicional e serviço; o 'mestre professor', cura e compaixão elevada.",
+}
+
+def calculate_expression_number(name: str) -> Tuple[int, str]:
+    """Classic Pythagorean expression number: reduces to a single digit
+    UNLESS an intermediate sum is a master number (11, 22, 33), which is
+    kept unreduced."""
+    total = sum(NUMEROLOGY_MAP.get(char.lower(), 0) for char in name if char.isalpha())
+    while total > 9 and total not in (11, 22, 33):
+        total = sum(int(digit) for digit in str(total))
+    return total, EXPRESSION_MEANINGS.get(total, "")
+
+# --- Chinese zodiac (animal + element) ---
+CHINESE_ANIMALS = [
+    "Rato", "Boi", "Tigre", "Coelho", "Dragão", "Serpente",
+    "Cavalo", "Cabra", "Macaco", "Galo", "Cão", "Porco",
+]
+CHINESE_ELEMENTS_BY_LAST_DIGIT = {
+    0: "Metal", 1: "Metal",
+    2: "Água", 3: "Água",
+    4: "Madeira", 5: "Madeira",
+    6: "Fogo", 7: "Fogo",
+    8: "Terra", 9: "Terra",
+}
+CHINESE_ANIMAL_TRAITS = {
+    "Rato": "engenhoso, ágil e observador; prospera com inteligência social.",
+    "Boi": "perseverante, confiável e paciente; constrói com passos firmes.",
+    "Tigre": "corajoso, confiante e competitivo; lidera com paixão e ousadia.",
+    "Coelho": "gentil, diplomático e cauteloso; busca harmonia e conforto.",
+    "Dragão": "carismático, ambicioso e enérgico; nasceu para se destacar.",
+    "Serpente": "sábia, intuitiva e reservada; observa antes de agir.",
+    "Cavalo": "livre, aventureiro e sociável; vive em movimento constante.",
+    "Cabra": "criativa, gentil e sensível; prospera em ambientes harmoniosos.",
+    "Macaco": "espirituoso, curioso e versátil; resolve problemas com criatividade.",
+    "Galo": "franco, trabalhador e observador; valoriza ordem e precisão.",
+    "Cão": "leal, honesto e protetor; guiado por um forte senso de justiça.",
+    "Porco": "generoso, otimista e sincero; aprecia os prazeres da vida.",
+}
+
+def calculate_chinese_zodiac(birthdate: datetime) -> Dict[str, str]:
+    """Approximate Chinese zodiac animal + element from the birth year.
+    (Uses the calendar year, not the exact Lunar New Year cutover date.)"""
+    year = birthdate.year
+    animal = CHINESE_ANIMALS[(year - 1900) % 12]
+    element = CHINESE_ELEMENTS_BY_LAST_DIGIT[year % 10]
+    return {
+        "animal": animal,
+        "element": element,
+        "label": f"{animal} de {element}",
+        "traits": CHINESE_ANIMAL_TRAITS.get(animal, ""),
+    }
 
 # --- 3. GEOSPATIAL & LEY LINE ENGINE ---
 LEY_LINE_NODES = {
@@ -153,6 +219,48 @@ def analyze_palm_image(image_path: str, hand: str = "right") -> Dict[str, str]:
         "dominant_aura_color": aura_color,
         "note": "Heuristic estimate from whole-image edge/color statistics; not a validated palm reading."
     }
+
+# --- MEANING LOOKUPS (name / location) — best-effort, online, graceful fallback ---
+# Uses the public Wikipedia (pt) summary API. No API key required. If the
+# request fails, times out, or nothing relevant is found, we return the same
+# fallback message shown in the UI rather than raising.
+_MEANING_FALLBACK = "Não foi possível obter o significado agora. Tente novamente."
+
+def _wikipedia_summary_pt(title: str, timeout: float = 5.0) -> Optional[str]:
+    try:
+        url = f"https://pt.wikipedia.org/api/rest_v1/page/summary/{title}"
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "synthesis-app/1.0"})
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        extract = data.get("extract")
+        if not extract:
+            return None
+        return extract
+    except Exception:
+        return None
+
+def get_name_meaning(full_name: str) -> Dict[str, object]:
+    """Best-effort lookup of the first name's origin/meaning via Wikipedia.
+    Many common first names have a dedicated pt.wikipedia article covering
+    etymology; when that's not the case (or the request fails), we fall
+    back to the same message shown in the UI."""
+    first_name = full_name.strip().split(" ")[0] if full_name.strip() else ""
+    if not first_name:
+        return {"success": False, "text": _MEANING_FALLBACK}
+    extract = _wikipedia_summary_pt(first_name.capitalize())
+    if extract:
+        return {"success": True, "text": extract}
+    return {"success": False, "text": _MEANING_FALLBACK}
+
+def get_location_meaning(city_name: str) -> Dict[str, object]:
+    """Best-effort lookup of a short description of a city via Wikipedia."""
+    if not city_name.strip():
+        return {"success": False, "text": _MEANING_FALLBACK}
+    extract = _wikipedia_summary_pt(city_name.strip().replace(" ", "_"))
+    if extract:
+        return {"success": True, "text": extract}
+    return {"success": False, "text": _MEANING_FALLBACK}
 
 # --- 5. CORRELATION & SOULMATE ENGINE ---
 def synthesize_profile(
