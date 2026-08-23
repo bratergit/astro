@@ -7,9 +7,10 @@ classical planet is "angular" (on the Ascendant, Descendant, Midheaven or
 Imum Coeli) around the globe, then ranks a built-in list of world cities by
 proximity to the "favorable" planetary lines (Sun, Moon, Venus, Jupiter).
 
-Uses pyswisseph with the Moshier semi-analytic ephemeris (FLG_MOSEPH), which
-is compiled into the library and needs no external ephemeris data files —
-so this works fully offline.
+Uses a pure-Python low-precision ephemeris (simple_ephemeris.py) — no
+compiled/binary dependency, so it can't break due to Python-version wheel
+mismatches on any hosting platform (this replaces an earlier pyswisseph
+version that broke on Python 3.14 for exactly that reason).
 
 This is astrology, presented here in the same spirit as the rest of the app
 (numerology, ley lines, biorhythms): a structured, deterministic calculation
@@ -20,17 +21,17 @@ import math
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-import swisseph as swe
+import simple_ephemeris as ephem
 
 # --- PLANETS ---
 PLANETS = {
-    "Sol": swe.SUN,
-    "Lua": swe.MOON,
-    "Mercúrio": swe.MERCURY,
-    "Vênus": swe.VENUS,
-    "Marte": swe.MARS,
-    "Júpiter": swe.JUPITER,
-    "Saturno": swe.SATURN,
+    "Sol": "sun",
+    "Lua": "moon",
+    "Mercúrio": "mercury",
+    "Vênus": "venus",
+    "Marte": "mars",
+    "Júpiter": "jupiter",
+    "Saturno": "saturn",
 }
 
 FAVORABLE_PLANETS = {"Sol", "Lua", "Vênus", "Júpiter"}
@@ -112,28 +113,24 @@ def julian_day_utc(birthdate: datetime, hour_utc: Optional[float] = None) -> flo
     """Julian day for the birth instant. Defaults to 12:00 UTC (noon) when no
     time is supplied, per the app's stated convention."""
     hour = 12.0 if hour_utc is None else hour_utc
-    return swe.julday(birthdate.year, birthdate.month, birthdate.day, hour)
+    return ephem.julian_day(birthdate.year, birthdate.month, birthdate.day, hour)
 
 
 def _normalize_lon(lon: float) -> float:
     return ((lon + 180) % 360) - 180
 
 
-def _planet_equatorial(jd_ut: float, planet_id: int) -> Tuple[float, float]:
-    """Returns (RA in degrees, Dec in degrees) using the Moshier ephemeris
-    (no external data files required)."""
-    flags = swe.FLG_MOSEPH | swe.FLG_EQUATORIAL
-    coords, _ = swe.calc_ut(jd_ut, planet_id, flags)
-    ra, dec = coords[0], coords[1]
-    return ra, dec
+def _planet_equatorial(jd_ut: float, planet_key: str) -> Tuple[float, float]:
+    """Returns (RA in degrees, Dec in degrees)."""
+    return ephem.get_planet_radec(jd_ut, planet_key)
 
 
-def compute_planet_lines(jd_ut: float, planet_id: int) -> Dict:
+def compute_planet_lines(jd_ut: float, planet_key: str) -> Dict:
     """Computes the MC/IC meridian longitudes and a sampled AC/DC curve
     (list of lat/lon points) for one planet at the given birth instant."""
-    ra_deg, dec_deg = _planet_equatorial(jd_ut, planet_id)
+    ra_deg, dec_deg = _planet_equatorial(jd_ut, planet_key)
     ra_h = ra_deg / 15.0
-    gst_h = swe.sidtime(jd_ut)  # Greenwich sidereal time, in hours
+    gst_h = ephem.gmst_hours(jd_ut)  # Greenwich sidereal time, in hours
 
     mc_lon = _normalize_lon((ra_h - gst_h) * 15.0)
     ic_lon = _normalize_lon(mc_lon + 180.0)
